@@ -179,11 +179,12 @@ trainTbl = combine(dsTrain, arrayDatastore(Ytrain_cat));
 % Trenuj
 net = trainNetwork(Xtrain_norm, Ytrain_cat, layers, options);
 
-%% Ocena na zbiorze testowym
-Ypred_probs = predict(net, Xtest_norm); % Nx2 macierz prawdopodobieństw
-cats = categories(Ytrain_cat);           % {'0','1','2','4','8','16','32'}
-[~, idxmax] = max(Ypred_probs,[],2);     
-Ypred = str2double(cats(idxmax));        % zamiana na oryginalne etykiety
+%%
+figure;
+cm = confusionmat(Ytest, Ypred);
+confusionchart(cm, categories(Ytrain_cat));
+title('Macierz pomyłek – Test Set');
+
 
 
 confMat = confusionmat(Ytest, Ypred);
@@ -224,64 +225,50 @@ cat_str = cellstr(string(all_cats));
 confirmation_window = 5;
 recent_preds = [];
 found_fault = false;
-fault_armed = true;   % pozwala wykryć nowy błąd dopiero po resecie
 
+% wektor przewidywanych klas dla każdej pozycji okna
 pred_over_time = NaN(nSamples,1);
 
 for s = 1:hop_samples:(nSamples - windowLen_samples + 1)
-
     window = mat_signal(s:s+windowLen_samples-1, :);
 
-    % --- Cechy
+    % Budowa cech
     Xwin = build_features_multi(window, fs, windowLen_samples, windowLen_samples);
 
-    % --- Normalizacja
+    % Normalizacja
     Xwin_norm = (Xwin - mu) ./ sigma;
 
-    % --- Predykcja
+    % Predykcja
     Yprob = predict(net, Xwin_norm);
     [~, idxmax] = max(Yprob,[],2);
-    Ypred_win = str2double(cat_str(idxmax));
+    Ypred_win = str2double(cat_str(idxmax));  % klasa
 
-    % zapisz predykcję w czasie
+    % zapisz predykcję dla czasu końca okna
     pred_over_time(s+windowLen_samples-1) = Ypred_win;
 
-    % --- Okno potwierdzające
+    % Mechanizm potwierdzenia błędu
     recent_preds = [recent_preds, Ypred_win];
-    if numel(recent_preds) > confirmation_window
+    if length(recent_preds) > confirmation_window
         recent_preds = recent_preds(end-confirmation_window+1:end);
     end
 
-    % --- Logika potwierdzenia
-    if numel(recent_preds) == confirmation_window ...
-            && numel(unique(recent_preds)) == 1
-
-        detected_class = recent_preds(1);
-
-        % === Wykrycie błędu ===
-        if detected_class ~= 0 && fault_armed ...
-                && (chosen_case ~= 0 && s >= fault_start_idx)
-
+    if length(recent_preds) == confirmation_window && numel(unique(recent_preds))==1 ...
+            && recent_preds(1) ~= 0
+        if ~found_fault && (chosen_case ~= 0 && s >= fault_start_idx)
             windowEnd = s + windowLen_samples - 1;
             windowEnd_time = (windowEnd - fault_start_idx) * dt;
-
-            fprintf('----------------------------------\n');
-            fprintf('Błąd potwierdzony w próbce %d\n', windowEnd);
-            fprintf('Czas od wystąpienia błędu: %.1f ms\n', windowEnd_time*1000);
-            fprintf('Przewidziany numer błędu: %d\n', detected_class);
-
             found_fault = true;
-            fault_armed = false;   % blokada przed kolejnym wykryciem
+            fprintf('Błąd potwierdzony w oknie kończącym się w próbce %d.\n', windowEnd);
+            fprintf('Czas od wystąpienia błędu: %.1f ms\n', windowEnd_time*1000);
+            fprintf('Przewidziany numer błędu: %d\n', recent_preds(1));
+            break
         end
-
-        % === Reset uzbrojenia po powrocie do klasy 0 ===
     end
 end
 
 if ~found_fault
     fprintf('Błąd nie został wykryty w sygnale.\n');
 end
-
 
 %% Rysowanie wykresu torque z predykcjami
 torque = mat_signal(:,end);
