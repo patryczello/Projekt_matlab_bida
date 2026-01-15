@@ -185,75 +185,57 @@ cm = confusionmat(Ytest, Ypred);
 confusionchart(cm, categories(Ytrain_cat));
 title('Macierz pomyłek – Test Set');
 
-%% Parametry "online"
-fprintf('================================== \n')
-windowLen_samples = windowLen;    % długość okna w próbkach
-hop_samples = 1;            % przesunięcie okna o 1 próbkę
-dt = 1/fs;                  % krok czasowy
-
-% -----------------------------
-% Losowanie sygnału błędu do sprawdzenia
-% -----------------------------
-rng('shuffle');
-all_cases = [errors, 0];
-chosen_case = all_cases(randi(length(all_cases)));
-
-if chosen_case == 0
-    fprintf('Wybrano losowo sygnał OK (bez błędu)\n');
-    mat_signal = mat_ok;
-else
-    idx = find(errors == chosen_case);
-    fprintf('Wybrano losowo sygnał z błędem numer: %d\n', chosen_case);
-    S = load(sprintf('%s%s%d%s', path_data, 'fault', chosen_case, '_faultType0.mat'));
-    mat_signal = [S.ia, S.ib, S.ic, S.ialfa, S.ibeta, S.motor_torque];
-end
-
-nSamples = size(mat_signal,1);
-fault_start_idx = tailStart;
-
-all_cats = [0, errors];
-cat_str = cellstr(string(all_cats));
+%% Sprawdzenie online
 
 confirmation_window = 5;
 recent_preds = [];
 found_fault = false;
 
-% wektor przewidywanych klas dla każdej pozycji okna
 pred_over_time = NaN(nSamples,1);
 
 for s = 1:hop_samples:(nSamples - windowLen_samples + 1)
+
     window = mat_signal(s:s+windowLen_samples-1, :);
 
-    % Budowa cech
+    % --- Cechy
     Xwin = build_features_multi(window, fs, windowLen_samples, windowLen_samples);
 
-    % Normalizacja
+    % --- Normalizacja
     Xwin_norm = (Xwin - mu) ./ sigma;
 
-    % Predykcja
+    % --- Predykcja
     Yprob = predict(net, Xwin_norm);
     [~, idxmax] = max(Yprob,[],2);
-    Ypred_win = str2double(cat_str(idxmax));  % klasa
+    Ypred_win = str2double(cat_str(idxmax));
 
-    % zapisz predykcję dla czasu końca okna
+    % zapisz predykcję w czasie
     pred_over_time(s+windowLen_samples-1) = Ypred_win;
 
-    % Mechanizm potwierdzenia błędu
+    % --- Okno potwierdzające
     recent_preds = [recent_preds, Ypred_win];
-    if length(recent_preds) > confirmation_window
+    if numel(recent_preds) > confirmation_window
         recent_preds = recent_preds(end-confirmation_window+1:end);
     end
 
-    if length(recent_preds) == confirmation_window && numel(unique(recent_preds))==1 ...
-            && recent_preds(1) ~= 0
-        if ~found_fault && (chosen_case ~= 0 && s >= fault_start_idx)
+    % --- Logika potwierdzenia
+    if numel(recent_preds) == confirmation_window ...
+            && numel(unique(recent_preds)) == 1
+
+        detected_class = recent_preds(1);
+
+        % === Wykrycie błędu ===
+        if detected_class ~= 0 ...
+                && (chosen_case ~= 0 && s >= fault_start_idx)
+
             windowEnd = s + windowLen_samples - 1;
             windowEnd_time = (windowEnd - fault_start_idx) * dt;
-            found_fault = true;
-            fprintf('Błąd potwierdzony w oknie kończącym się w próbce %d.\n', windowEnd);
+
+            fprintf('----------------------------------\n');
+            fprintf('Błąd potwierdzony w próbce %d\n', windowEnd);
             fprintf('Czas od wystąpienia błędu: %.1f ms\n', windowEnd_time*1000);
-            fprintf('Przewidziany numer błędu: %d\n', recent_preds(1));
-            break
+            fprintf('Przewidziany numer błędu: %d\n', detected_class);
+
+            found_fault = true;
         end
     end
 end
@@ -262,6 +244,7 @@ if ~found_fault
     fprintf('Błąd nie został wykryty w sygnale.\n');
 end
 
+%%
 torque = mat_signal(:,end);
 time = (0:nSamples-1) * dt;
 
