@@ -1,0 +1,89 @@
+# Information
+# Inverter :
+# | | |
+# S1 S3 S5
+# | | |
+# S2 S4 S6
+# | | |
+# fPWM = 20kHz, DT(dead time) = 4us
+
+# faultType:
+#  0 – open circuit
+#  1 – short circuit
+# fault: S6 S5 S4 S3 S2 S1 – binary representation from 0 to 63
+# ex. 35 -> 1 0 0 0 1 1 -> faults in switches S6, S2 and S1
+# 0 – no faults
+# 63 – faults in all switches
+# faultTime: time when fault occurs in sec
+# Tsym: simulation time in sec
+# Simout:
+#  rotational speed n [rpm]: data1 – reference, data2 – measurement
+#  current in d-axis [A]: data1 – reference, data2 – measurement
+#  current in q-axis [A]: data1 – reference, data2 – measurement
+#  current in alpha-axis [A]: data – measurement
+#  current in beta-axis [A]: data – measurement
+#  current in a-phase [A]: data – measurement
+#  current in b-phase [A]: data – measurement
+#  current in c-phase [A]: data – measurement
+#  theta [rad]: data – measurement
+#  torque [Nm]: data – measurement
+
+# Inverter faults:
+#  S1
+#  S2
+#  S3
+#  S4
+#  S5
+#  S6
+#  S1 & S2
+#  S1 & S3
+#  S1 & S4
+#  S1 & S5
+#  S1 & S6
+#  S2 & S3
+#  S2 & S4
+#  S2 & S5
+#  S2 & S6
+#  S3 & S4
+#  S3 & S5
+#  S3 & S6
+#  S4 & S5
+#  S4 & S6
+#  S5 & S6
+#  S1 & S2 & S3
+#  S1 & S2 & S4
+#  S1 & S2 & S5
+#  S1 & S2 & S6
+#  S1 & S3 & S4
+#  S1 & S3 & S5
+#  S1 & S3 & S6
+#  S1 & S4 & S5
+#  S1 & S4 & S6
+#  S1 & S5 & S6
+#  S2 & S3 & S4
+#  S2 & S3 & S5
+#  S2 & S3 & S6
+#  S2 & S4 & S5
+#  S2 & S4 & S6
+#  S2 & S5 & S6
+#  S3 & S4 & S5
+#  S3 & S4 & S6
+#  S3 & S5 & S6
+#  S4 & S5 & S6
+#  S1 & S2 & S3 & S4
+#  S1 & S2 & S3 & S5
+#  S1 & S2 & S3 & S6
+#  S1 & S2 & S4 & S5
+#  S1 & S2 & S4 & S6
+#  S1 & S2 & S5 & S6
+#  S2 & S3 & S4 & S5
+#  S2 & S3 & S4 & S6
+#  S2 & S3 & S5 & S6
+#  S3 & S4 & S5 & S6
+#  S1 & S2 & S3 & S4 & S5
+#  S1 & S2 & S3 & S4 & S6
+#  S1 & S2 & S3 & S5 & S6
+#  S1 & S2 & S4 & S5 & S6
+#  S1 & S3 & S4 & S5 & S6
+#  S2 & S3 & S4 & S5 & S6
+#  S1 & S2 & S3 & S4 & S5 & S6
