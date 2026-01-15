@@ -193,11 +193,75 @@ scoresPos = Ypred_probs(:,2);
 [Xroc,Yroc,~,AUC] = perfcurve(Ytest, scoresPos, 1);
 fprintf('AUC = %.3f\n', AUC);
 
-%% Parametry "online"
+%% Bulk Processing and Plotting for All Faults
+plot_dir = './plots/';
+if ~exist(plot_dir, 'dir')
+    mkdir(plot_dir);
+end
+
+% Get list of all .mat files in the directory
+files = dir(fullfile(path_data, '*_faultType0.mat'));
+
+% Define the missing variable based on your settings
+windowLen_samples = windowLen; 
+dt = 1/fs; 
+
 fprintf('================================== \n')
-windowLen_samples = windowLen;   % długość okna
-fault_start_idx = tailStart;
-dt = 1/fs;
+fprintf('Starting bulk plot generation...\n')
+
+for f = 1:length(files)
+    filename = files(f).name;
+    case_label = erase(filename, '_faultType0.mat');
+    
+    S_curr = load(fullfile(path_data, filename));
+    mat_signal = [S_curr.ia, S_curr.ib, S_curr.ic, S_curr.ialfa, S_curr.ibeta, S_curr.motor_torque];
+    
+    nSamples = size(mat_signal,1);
+    nChannels = size(mat_signal,2);
+    Ypred_all = zeros(nSamples,1);
+    
+    % --- Online Simulation ---
+    for s = 1:nSamples
+        window = zeros(windowLen_samples, nChannels);
+        if s < windowLen_samples
+            window(end-s+1:end, :) = mat_signal(1:s, :);
+        else
+            window(:, :) = mat_signal(s-windowLen_samples+1:s, :);
+        end
+        
+        % Note: build_features_multi returns one row per window
+        % Since s=1:nSamples, we process sample by sample
+        Xwin = build_features_multi(window, fs, windowLen_samples, windowLen_samples);
+        Xwin_norm = (Xwin - mu) ./ sigma;
+        Yprob = predict(net, Xwin_norm);
+        [~, idxmax] = max(Yprob,[],2);
+        Ypred_all(s) = idxmax - 1; 
+    end
+    
+    % --- Generate Plot ---
+    t_plot = (0:nSamples-1) * dt;
+    torque_plot = mat_signal(:,6);
+    
+    hFig = figure('Visible', 'off'); 
+    yyaxis left
+    plot(t_plot, torque_plot, 'b', 'LineWidth', 1.2);
+    ylabel('Torque [Nm]');
+    grid on;
+    
+    yyaxis right
+    stairs(t_plot, Ypred_all, 'r', 'LineWidth', 1.5);
+    ylabel('Classification (0 / 1)');
+    ylim([-0.1 1.1]);
+    
+    xlabel('Time [s]');
+    title(['Detection Result: ', case_label]);
+    legend('Torque', 'Detection', 'Location', 'best');
+    
+    saveas(hFig, fullfile(plot_dir, [case_label, '_plot.png']));
+    close(hFig); 
+    
+    fprintf('Processed and saved: %s\n', case_label);
+end
 
 %% Pobierz sygnał
 mat_signal = [S.ia, S.ib, S.ic, S.ialfa, S.ibeta, S.motor_torque];
