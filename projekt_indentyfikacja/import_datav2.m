@@ -179,18 +179,11 @@ trainTbl = combine(dsTrain, arrayDatastore(Ytrain_cat));
 % Trenuj
 net = trainNetwork(Xtrain_norm, Ytrain_cat, layers, options);
 
-%% Ocena na zbiorze testowym
-Ypred_probs = predict(net, Xtest_norm); % Nx2 macierz prawdopodobieństw
-cats = categories(Ytrain_cat);           % {'0','1','2','4','8','16','32'}
-[~, idxmax] = max(Ypred_probs,[],2);     
-Ypred = str2double(cats(idxmax));        % zamiana na oryginalne etykiety
-
-
-confMat = confusionmat(Ytest, Ypred);
-disp('Confusion matrix (rows=true, cols=predicted):');
-disp(confMat);
-acc = sum(Ypred==Ytest)/numel(Ytest);
-fprintf('Accuracy = %.2f%%\n', acc*100);
+%%
+figure;
+cm = confusionmat(Ytest, Ypred);
+confusionchart(cm, categories(Ytrain_cat));
+title('Macierz pomyłek – Test Set');
 
 %% Parametry "online"
 fprintf('================================== \n')
@@ -269,7 +262,6 @@ if ~found_fault
     fprintf('Błąd nie został wykryty w sygnale.\n');
 end
 
-%% Rysowanie wykresu torque z predykcjami
 torque = mat_signal(:,end);
 time = (0:nSamples-1) * dt;
 
@@ -282,7 +274,7 @@ ylim([min(torque) max(torque)])  % opcjonalnie dopasuj
 yyaxis right
 plot(time, pred_over_time, 'r', 'LineWidth', 1.2);
 ylabel('Predykcja')
-ylim([min(pred_over_time) max(pred_over_time)])  % opcjonalnie dopasuj
+ylim([min(pred_over_time-2) max(pred_over_time+2)])  % opcjonalnie dopasuj
 
 xlabel('Czas [s]')
 title('Predykcje nałożone na torque (dwie osie Y)')
