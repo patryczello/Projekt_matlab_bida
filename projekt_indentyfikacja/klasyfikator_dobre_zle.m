@@ -65,32 +65,36 @@ function X = build_features_multi(mat, ~, windowLen, hop)
     
     for s = 1:hop:(n - windowLen + 1)
         w = mat(s:s+windowLen-1, :); % windowLen x C
-        f_phase = [];
+        f_all_channels = [];
         
-        % Loop through all channels (1 to 6)
-        % When p=6, it calculates stats for motor_torque
         for p = 1:C
             x = w(:,p);
-            f_phase = [f_phase, rms(x), std(x), max(x), min(x), skewness(x), kurtosis(x)];
+            
+            % --- Statistical features ---
+            f_stats = [rms(x), std(x), max(x), min(x), skewness(x), kurtosis(x)];
+            
+            % --- Spectral feature (FFT) for CURRENT channel ---
+            Xf = fft(x);
+            mag = abs(Xf(1:floor(windowLen/2)));
+            if numel(mag) > 2
+                [~, idx] = max(mag(2:end)); % Skip DC component at index 1
+                idx = idx + 1;
+                domAmp = mag(idx);
+            else
+                domAmp = 0;
+            end
+            
+            % Combine stats and FFT for this specific channel
+            f_all_channels = [f_all_channels, f_stats, domAmp];
         end
         
-        % Inter-phase calculations (using first 3 columns)
+        % --- Inter-phase calculations (using first 3 columns: ia, ib, ic) ---
         ia = w(:,1); ib = w(:,2); ic = w(:,3);
         zero_seq = mean(ia + ib + ic);
         pos_seq = max(abs(ia + ib*exp(-1j*2*pi/3) + ic*exp(1j*2*pi/3)));
         
-        % Spectral feature (ia)
-        Xf = fft(ia);
-        mag = abs(Xf(1:floor(windowLen/2)));
-        if numel(mag) > 2
-            [~, idx] = max(mag(2:end)); idx = idx+1;
-            domAmp = mag(idx);
-        else
-            domAmp = 0;
-        end
-        
-        % Combine everything - torque stats are already inside f_phase
-        X = [X; f_phase, zero_seq, pos_seq, domAmp];
+        % Combine all channel features with inter-phase features
+        X = [X; f_all_channels, zero_seq, pos_seq];
     end
 end
 
@@ -191,7 +195,7 @@ fprintf('AUC = %.3f\n', AUC);
 
 %% Parametry "online"
 fprintf('================================== \n')
-windowLen_samples = 100;   % długość okna
+windowLen_samples = windowLen;   % długość okna
 fault_start_idx = tailStart;
 dt = 1/fs;
 
