@@ -191,7 +191,7 @@ fprintf('AUC = %.3f\n', AUC);
 
 %% Parametry "online"
 fprintf('================================== \n')
-windowLen_samples = 100;   % długość okna
+windowLen_samples = windowLen;   % długość okna
 fault_start_idx = tailStart;
 dt = 1/fs;
 
