@@ -57,44 +57,40 @@ fault = [ia_fault(:), ib_fault(:), ic_fault(:), ialfa_fault(:), ibeta_fault(:), 
 % skorzystamy z funkcji build_features która pracuje na macierzy Nx3. Dostosujemy ją do 6-kanałowej.
 
 % Zbuduj cechy z okien (adaptowana funkcja do 6 kanałów)
-function X = build_features_multi(mat, fs, windowLen, hop)
-    % mat: N x C (C = 6)
+function X = build_features_multi(mat, ~, windowLen, hop)
+    % mat: N x C (C = 6: ia, ib, ic, ialfa, ibeta, torque)
     n = size(mat,1);
     C = size(mat,2);
     X = [];
+    
     for s = 1:hop:(n - windowLen + 1)
         w = mat(s:s+windowLen-1, :); % windowLen x C
-
         f_phase = [];
+        
+        % Loop through all channels (1 to 6)
+        % When p=6, it calculates stats for motor_torque
         for p = 1:C
             x = w(:,p);
             f_phase = [f_phase, rms(x), std(x), max(x), min(x), skewness(x), kurtosis(x)];
         end
-
-        % złączenia międzyfazowe — dla sygnałów prądowych (pierws 3 kolumn)
-        ia = w(:,1);
-        ib = w(:,2);
-        ic = w(:,3);
-
+        
+        % Inter-phase calculations (using first 3 columns)
+        ia = w(:,1); ib = w(:,2); ic = w(:,3);
         zero_seq = mean(ia + ib + ic);
         pos_seq = max(abs(ia + ib*exp(-1j*2*pi/3) + ic*exp(1j*2*pi/3)));
-
-        % dodatkowo: średnia i std dla motor_torque (kol.6) jako cechy globalne
-        torque_mean = mean(w(:,6));
-        torque_std = std(w(:,6));
-
-        % spektralna z pierwszego kanału (ia)
+        
+        % Spectral feature (ia)
         Xf = fft(ia);
         mag = abs(Xf(1:floor(windowLen/2)));
         if numel(mag) > 2
-            [~, idx] = max(mag(2:end));
-            idx = idx+1;
+            [~, idx] = max(mag(2:end)); idx = idx+1;
             domAmp = mag(idx);
         else
             domAmp = 0;
         end
-
-        X = [X; f_phase, zero_seq, pos_seq, torque_mean, torque_std, domAmp];
+        
+        % Combine everything - torque stats are already inside f_phase
+        X = [X; f_phase, zero_seq, pos_seq, domAmp];
     end
 end
 
