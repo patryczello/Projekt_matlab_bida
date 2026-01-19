@@ -10,7 +10,7 @@ path_data = './Faults_database/';
 errors = 1; % zmień tu listę przypadków błędów (np. 1:5)
 fs = 20000; % częstotliwość próbkowania (używana przy cechach)
 windowLen = 100; % długość okna (próbki)
-hop = windowLen/2; % hop (brak overlap). Możesz ustawić mniejszy
+hop = windowLen/10; % hop. Możesz ustawić mniejszy
 tailStart = 20001; % indeks początku części "fault" w plikach
 nCases = length(errors);
 
@@ -149,16 +149,16 @@ inputSize = size(Xtrain_norm,2);
 layers = [
     featureInputLayer(inputSize)
 
-    fullyConnectedLayer(256)
+    fullyConnectedLayer(128)
     batchNormalizationLayer
     reluLayer
 
-    fullyConnectedLayer(128)
+    fullyConnectedLayer(64)
     batchNormalizationLayer
     reluLayer
     dropoutLayer(0.5)
 
-    fullyConnectedLayer(64)
+    fullyConnectedLayer(32)
     reluLayer
 
     fullyConnectedLayer(2)
@@ -171,8 +171,7 @@ options = trainingOptions('adam', ...
     'MaxEpochs',20, ...
     'MiniBatchSize',128, ...
     'InitialLearnRate',1e-3, ...
-    'Verbose',false, ...
-    'Plots','none');
+    'Verbose',true);
 
 % Przygotuj dane do trenowania (tabela lub ds)
 Ytrain_cat = categorical(Ytrain);
@@ -209,81 +208,100 @@ scoresPos = Ypred_probs(:, 2);
 fprintf('AUC = %.3f\n', AUC);
 
 %% Bulk Processing with Multicore and GPU Support
-% plot_dir = './plots/';
-% if ~exist(plot_dir, 'dir')
-%     mkdir(plot_dir);
-% end
-% 
-% files = dir(fullfile(path_data, '*_faultType0.mat'));
+plot_dir = './plots/';
+if ~exist(plot_dir, 'dir')
+    mkdir(plot_dir);
+end
+
+files = dir(fullfile(path_data, '*_faultType0.mat'));
 windowLen_samples = windowLen; 
 dt = 1/fs; 
-% 
-% % Capture variables for parfor
-% mu_val = mu;
-% sigma_val = sigma;
-% % If you have a compatible GPU, move the net to GPU memory
-% % Note: trainNetwork already returns a DAGNetwork/SeriesNetwork that 
-% % can use the GPU automatically if available during predict().
-% net_gpu = net; 
-% 
-% fprintf('================================== \n')
-% fprintf('Starting parallel bulk plot generation...\n')
-% 
-% parfor f = 1:length(files)
-%     filename = files(f).name;
-%     case_label = erase(filename, '_faultType0.mat');
-% 
-%     % Use a local struct to avoid transparency issues in parfor
-%     S_curr = load(fullfile(path_data, filename));
-%     mat_signal = [S_curr.ia, S_curr.ib, S_curr.ic, S_curr.ialfa, S_curr.ibeta, S_curr.motor_torque];
-% 
-%     nSamples = size(mat_signal,1);
-%     nChannels = size(mat_signal,2);
-%     Ypred_all = zeros(nSamples,1);
-% 
-%     % --- Online Simulation (Processing) ---
-%     for s = 1:nSamples
-%         window = zeros(windowLen_samples, nChannels);
-%         if s < windowLen_samples
-%             window(end-s+1:end, :) = mat_signal(1:s, :);
-%         else
-%             window(:, :) = mat_signal(s-windowLen_samples+1:s, :);
-%         end
-% 
-%         % Feature Extraction
-%         Xwin = build_features_multi(window, fs, windowLen_samples, windowLen_samples);
-%         Xwin_norm = (Xwin - mu_val) ./ sigma_val;
-% 
-%         % Prediction (Inference)
-%         % Using 'ExecutionEnvironment', 'gpu' if available
-%         Yprob = predict(net_gpu, Xwin_norm, 'ExecutionEnvironment', 'auto');
-%         [~, idxmax] = max(Yprob,[],2);
-%         Ypred_all(s) = idxmax - 1; 
-%     end
-% 
-%     % --- Generate and Save Plot ---
-%     t_plot = (0:nSamples-1) * dt;
-%     torque_plot = mat_signal(:,6);
-% 
-%     hFig = figure('Visible', 'off'); 
-%     yyaxis left
-%     plot(t_plot, torque_plot, 'b', 'LineWidth', 1.2);
-%     ylabel('Torque [Nm]');
-%     grid on;
-% 
-%     yyaxis right
-%     stairs(t_plot, Ypred_all, 'r', 'LineWidth', 1.5);
-%     ylabel('Classification (0 / 1)');
-%     ylim([-0.1 1.1]);
-% 
-%     xlabel('Time [s]');
-%     title(['Detection Result: ', case_label]);
-% 
-%     saveas(hFig, fullfile(plot_dir, [case_label, '_plot.png']));
-%     close(hFig); 
-% 
-%     fprintf('Processed: %s\n', case_label);
-% end
+
+% Capture variables for parfor
+mu_val = mu;
+sigma_val = sigma;
+% If you have a compatible GPU, move the net to GPU memory
+% Note: trainNetwork already returns a DAGNetwork/SeriesNetwork that 
+% can use the GPU automatically if available during predict().
+net_gpu = net; 
+
+fprintf('================================== \n')
+fprintf('Starting parallel bulk plot generation...\n')
+
+all_files_latencies = nan(length(files), 1);
+
+parfor f = 1:length(files)
+    filename = files(f).name;
+    case_label = erase(filename, '_faultType0.mat');
+
+    % Use a local struct to avoid transparency issues in parfor
+    S_curr = load(fullfile(path_data, filename));
+    mat_signal = [S_curr.ia, S_curr.ib, S_curr.ic, S_curr.ialfa, S_curr.ibeta, S_curr.motor_torque];
+
+    nSamples = size(mat_signal,1);
+    nChannels = size(mat_signal,2);
+    Ypred_all = zeros(nSamples,1);
+
+    found_fault_local = false;
+    det_time_local = NaN;
+
+    % --- Online Simulation (Processing) ---
+    for s = 1:nSamples
+        window = zeros(windowLen_samples, nChannels);
+        if s < windowLen_samples
+            window(end-s+1:end, :) = mat_signal(1:s, :);
+        else
+            window(:, :) = mat_signal(s-windowLen_samples+1:s, :);
+        end
+
+        % Feature Extraction
+        Xwin = build_features_multi(window, fs, windowLen_samples, windowLen_samples);
+        Xwin_norm = (Xwin - mu_val) ./ sigma_val;
+
+        % Prediction (Inference)
+        % Using 'ExecutionEnvironment', 'gpu' if available
+        Yprob = predict(net_gpu, Xwin_norm, 'ExecutionEnvironment', 'auto');
+        [~, idxmax] = max(Yprob,[],2);
+        Ypred_all(s) = idxmax - 1; 
+        
+        if ~found_fault_local && Ypred_all(s) == 1 && s >= tailStart
+            det_time_local = (s - tailStart) * dt;
+            found_fault_local = true;
+        end
+
+        all_files_latencies(f) = det_time_local;
+    end
+
+    % --- Generate and Save Plot ---
+    t_plot = (0:nSamples-1) * dt;
+    torque_plot = mat_signal(:,6);
+
+    hFig = figure('Visible', 'off'); 
+    yyaxis left
+    plot(t_plot, torque_plot, 'b', 'LineWidth', 1.2);
+    ylabel('Torque [Nm]');
+    grid on;
+
+    yyaxis right
+    stairs(t_plot, Ypred_all, 'r', 'LineWidth', 1.5);
+    ylabel('Classification (0 / 1)');
+    ylim([-0.1 1.1]);
+
+    xlabel('Time [s]');
+    title(['Detection Result: ', case_label]);
+
+    saveas(hFig, fullfile(plot_dir, [case_label, '_plot.png']));
+    close(hFig); 
+
+    if found_fault_local
+        fprintf('File: %s | Detection Time: %.2f ms\n', filename, det_time_local * 1000);
+    else
+        fprintf('File: %s | NO FAULT DETECTED\n', filename);
+    end
+
+    fprintf('Processed: %s\n', case_label);
+
+end
 
 %% Pobierz sygnał
 mat_signal = [S.ia, S.ib, S.ic, S.ialfa, S.ibeta, S.motor_torque];
@@ -359,3 +377,30 @@ xlabel('Czas [s]');
 title('Moment elektromagnetyczny oraz wynik detekcji błędu');
 
 legend('Torque', 'Detekcja błędu', 'Location', 'best');
+
+%% Statistical Analysis of Detection Times
+valid_latencies = all_files_latencies(~isnan(all_files_latencies)) * 1000; % Convert to ms
+detection_rate = (sum(~isnan(all_files_latencies)) / length(all_files_latencies)) * 100;
+
+fprintf('\n================ STATISTICAL REPORT ================\n');
+fprintf('Total files processed: %d\n', length(files));
+fprintf('Detection Rate:        %.2f%%\n', detection_rate);
+
+if ~isempty(valid_latencies)
+    fprintf('Mean Detection Time:   %.2f ms\n', mean(valid_latencies));
+    fprintf('Median Detection Time: %.2f ms\n', median(valid_latencies));
+    fprintf('Min Detection Time:    %.2f ms\n', min(valid_latencies));
+    fprintf('Max Detection Time:    %.2f ms\n', max(valid_latencies));
+    fprintf('Std Deviation:         %.2f ms\n', std(valid_latencies));
+
+    % Plot Histogram of Latencies
+    figure;
+    histogram(valid_latencies, 15, 'FaceColor', '#0072BD');
+    grid on;
+    xlabel('Detection Latency [ms]');
+    ylabel('Number of Cases');
+    title('Distribution of Fault Detection Times');
+else
+    fprintf('No faults were detected in the provided dataset.\n');
+end
+fprintf('====================================================\n');
