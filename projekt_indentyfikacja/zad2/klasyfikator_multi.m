@@ -109,97 +109,122 @@ plot_dir = './plots_multi/';
 if ~exist(plot_dir, 'dir'), mkdir(plot_dir); end
 files = dir(fullfile(path_data, '*_faultType0.mat'));
 
-% Mapping for labels
-error_vals = [0, errors];
-error_names = ["Healthy", "Fault 1", "Fault 2", "Fault 4", "Fault 8", "Fault 16", "Fault 32"];
+% === Dynamiczne mapowanie klas (0..63) ===
+errors = 1:63;
+
+error_vals  = [0, errors];                 % [0 1 2 ... 63]
+error_names = "Fault " + string(error_vals);
+error_names(1) = "Healthy";                % klasa 0
 
 dt = 1/fs; 
-mu_val = mu; sigma_val = sigma; 
+mu_val = mu; 
+sigma_val = sigma; 
 net_gpu = net; 
+
 all_files_latencies = nan(length(files), 1); 
 
 fprintf('================================== \n')
 fprintf('Starting parallel bulk plot generation (Multi-class Online)...\n')
 
 parfor f = 1:length(files)
+
     filename = files(f).name;
-    
+
     % --- Determine True Label for Title ---
     true_desc = "Healthy"; 
-    for e_idx = 1:length(errors)
-        if contains(filename, sprintf('fault%d_', errors(e_idx)))
-            true_desc = error_names(e_idx + 1);
+    for e_idx = 1:numel(errors)
+        tag = sprintf('fault%d_', errors(e_idx));
+        if contains(filename, tag)
+            true_desc = "Fault " + errors(e_idx);
             break;
         end
     end
-    
+
     case_label = erase(filename, '_faultType0.mat');
     S_curr = load(fullfile(path_data, filename));
-    mat_signal = [S_curr.ia, S_curr.ib, S_curr.ic, S_curr.ialfa, S_curr.ibeta, S_curr.motor_torque];
+
+    mat_signal = [S_curr.ia, S_curr.ib, S_curr.ic, ...
+                  S_curr.ialfa, S_curr.ibeta, S_curr.motor_torque];
+
     nSamples = size(mat_signal,1);
-    
-    pred_over_time = zeros(nSamples,1);
+
+    pred_over_time   = zeros(nSamples,1);
     found_fault_local = false;
-    det_time_local = NaN;
+    det_time_local    = NaN;
 
     % --- Online Simulation Loop ---
     for s = windowLen:nSamples
+
         % 1. Extract Buffer (Online sliding window)
         window = mat_signal(s-windowLen+1:s, :);
-        
+
         % 2. Feature Extraction & Prediction
-        % Note: build_features_multi used here with hop=windowLen returns 1 row
+        % hop = windowLen -> 1 wektor cech
         Xwin = build_features_multi(window, fs, windowLen, windowLen);
         Xwin_norm = (Xwin - mu_val) ./ sigma_val;
-        
+
         Yprob = predict(net_gpu, Xwin_norm, 'ExecutionEnvironment', 'auto');
-        [~, idx] = max(Yprob,[],2);
-        
-        current_pred = str2double(cats(idx));
+        [~, idx] = max(Yprob, [], 2);
+
+        % --- BEZPIECZNE MAPOWANIE: indeks klasy → etykieta liczbowa ---
+        if idx < 1
+            idx = 1;
+        elseif idx > numel(error_vals)
+            warning('Predicted class index %d exceeds known classes. Clipping.', idx);
+            idx = numel(error_vals);
+        end
+
+        current_pred = error_vals(idx);
         pred_over_time(s) = current_pred;
-        
+
         % 3. Real-time Detection Logic
         if ~found_fault_local && current_pred > 0 && s >= tailStart
             det_time_local = (s - tailStart) * dt;
             found_fault_local = true;
         end
     end
-    
+
     all_files_latencies(f) = det_time_local;
 
     % --- Generate Plot ---
     t_plot = (0:nSamples-1) * dt;
     hFig = figure('Visible', 'off'); 
-    
+
     yyaxis left
     plot(t_plot, mat_signal(:,6), 'b'); 
     ylabel('Torque [Nm]');
     grid on;
-    
+
     yyaxis right
     stairs(t_plot, pred_over_time, 'r', 'LineWidth', 1.2); 
     ylabel('Classification');
+
     yticks(error_vals);
     yticklabels(error_names);
     ylim([-1 max(errors) + 5]); 
-    
+
     xlabel('Time [s]');
     title({['File: ', strrep(case_label, '_', '\_')], ...
            ['Actual Status: ', char(true_desc)]});
-    
+
     % Add indicator for fault injection point
     xline(tailStart * dt, '--k', 'Fault Start');
 
-    saveas(hFig, fullfile(plot_dir, strrep(filename, '.mat', '_multi_plot.png')));
-    
-    % --- Printed Info (Restored) ---
+    saveas(hFig, fullfile(plot_dir, ...
+           strrep(filename, '.mat', '_multi_plot.png')));
+
+    % --- Printed Info ---
     if found_fault_local
-        fprintf('File: %s | True: %s | Det. Time: %.2f ms\n', filename, true_desc, det_time_local * 1000);
+        fprintf('File: %s | True: %s | Det. Time: %.2f ms\n', ...
+                filename, true_desc, det_time_local * 1000);
     else
-        fprintf('File: %s | True: %s | NO FAULT DETECTED\n', filename, true_desc);
+        fprintf('File: %s | True: %s | NO FAULT DETECTED\n', ...
+                filename, true_desc);
     end
+
     close(hFig);
 end
+
 
 %% Statistical Report (Restored)
 valid_latencies = all_files_latencies(~isnan(all_files_latencies)) * 1000; 
