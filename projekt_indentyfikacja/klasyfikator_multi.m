@@ -1,306 +1,216 @@
 clc; clear; close all;
-
 %% Ustawienia użytkownika
+rng(2) 
 path_data = './Faults_database/';
-errors = [1,2,4,8,16,32];        % zmień tu listę przypadków błędów (np. 1:5)
-fs = 20000;          % częstotliwość próbkowania (używana przy cechach)
-windowLen = 100;      % długość okna (próbki)
-hop = windowLen/2;     % hop (brak overlap). Możesz ustawić mniejszy
-tailStart = 20001;   % indeks początku części "fault" w plikach
-
+errors = zeros(1, 64);
+for i = 0:63
+    errors(i+1) = i;
+end       
+fs = 20000;          
+windowLen = 100;      
+hop = windowLen/10;     
+tailStart = 20001;   
 nCases = length(errors);
 
-%% Wczytaj pierwszy plik żeby ustalić nTail i sprawdzić zgodność
-S0 = load(sprintf('%s%s%d%s', path_data, 'fault', errors(1), '_faultType0.mat'));
-if numel(S0.ia) < tailStart
-    error('Plik ma mniej niż %d próbek.', tailStart);
+if isempty(gcp('nocreate'))
+    parpool; 
 end
+
+%% Wczytaj i przygotuj dane (Logic unchanged)
+S0 = load(sprintf('%s%s%d%s', path_data, 'fault', errors(1), '_faultType0.mat'));
 nTail = numel(S0.ia) - (tailStart-1);
 
-% Prealokacja macierzy tail (rows = nTail, cols = nCases)
-ia_fault    = zeros(nTail, nCases);
-ib_fault    = zeros(nTail, nCases);
-ic_fault    = zeros(nTail, nCases);
-ialfa_fault = zeros(nTail, nCases);
-ibeta_fault = zeros(nTail, nCases);
-motor_torque_fault = zeros(nTail, nCases);
+ia_fault = zeros(nTail, nCases); ib_fault = zeros(nTail, nCases); ic_fault = zeros(nTail, nCases);
+ialfa_fault = zeros(nTail, nCases); ibeta_fault = zeros(nTail, nCases); motor_torque_fault = zeros(nTail, nCases);
 
-% Wczytaj pliki i zapisz tail
 for i = 1:nCases
-    case_number = errors(i);
-    S = load(sprintf('%s%s%d%s', path_data, 'fault', case_number, '_faultType0.mat'));
-    % Sprawdź długości
-    if numel(S.ia) < tailStart + nTail - 1
-        error('Plik fault%d ma za mało próbek.', case_number);
-    end
-    ia_fault(:,i)    = S.ia(tailStart:end,1);
-    ib_fault(:,i)    = S.ib(tailStart:end,1);
-    ic_fault(:,i)    = S.ic(tailStart:end,1);
-    ialfa_fault(:,i) = S.ialfa(tailStart:end,1);
-    ibeta_fault(:,i) = S.ibeta(tailStart:end,1);
-    motor_torque_fault(:,i) = S.motor_torque(tailStart:end,1);
+    S = load(sprintf('%s%s%d%s', path_data, 'fault', errors(i), '_faultType0.mat'));
+    ia_fault(:,i) = S.ia(tailStart:end,1); ib_fault(:,i) = S.ib(tailStart:end,1); ic_fault(:,i) = S.ic(tailStart:end,1);
+    ialfa_fault(:,i) = S.ialfa(tailStart:end,1); ibeta_fault(:,i) = S.ibeta(tailStart:end,1); motor_torque_fault(:,i) = S.motor_torque(tailStart:end,1);
 end
 
-% "OK" (poprawne) sygnały — przyjmujemy z ostatnio wczytanego pliku S (albo wczytaj osobny plik)
-ia_poprawne = S.ia(1:tailStart-1,1);
-ib_poprawne = S.ib(1:tailStart-1,1);
-ic_poprawne = S.ic(1:tailStart-1,1);
-ialfa_poprawne = S.ialfa(1:tailStart-1,1);
-ibeta_poprawne = S.ibeta(1:tailStart-1,1);
-motor_torque_poprawne = S.motor_torque(1:tailStart-1,1);
+ia_poprawne = S.ia(1:tailStart-1,1); ib_poprawne = S.ib(1:tailStart-1,1); ic_poprawne = S.ic(1:tailStart-1,1);
+ialfa_poprawne = S.ialfa(1:tailStart-1,1); ibeta_poprawne = S.ibeta(1:tailStart-1,1); motor_torque_poprawne = S.motor_torque(1:tailStart-1,1);
 
-%% Przygotowanie macierzy wejściowej do ML
-% Scal sygnały: kolumny = [ia ib ic ialfa ibeta motor_torque]
-fault = [ia_fault(:), ib_fault(:), ic_fault(:), ialfa_fault(:), ibeta_fault(:), motor_torque_fault(:)];
-% Uwaga: powyżej flattenujemy wszystkie kolumny jedna po drugiej — ale zamiast tego
-% skorzystamy z funkcji build_features która pracuje na macierzy Nx3. Dostosujemy ją do 6-kanałowej.
-
-% Zbuduj cechy z okien (adaptowana funkcja do 6 kanałów)
+%% Funkcja budująca cechy (Multichannel)
 function X = build_features_multi(mat, ~, windowLen, hop)
-    % mat: N x C (C = 6)
-    n = size(mat,1);
-    C = size(mat,2);
-    X = [];
+    n = size(mat,1); C = size(mat,2); X = [];
     for s = 1:hop:(n - windowLen + 1)
-        w = mat(s:s+windowLen-1, :); % windowLen x C
-        f_phase = [];
+        w = mat(s:s+windowLen-1, :); f_phase = [];
         for p = 1:C
             x = w(:,p);
             f_phase = [f_phase, rms(x), std(x), max(x), min(x), skewness(x), kurtosis(x)];
         end
-        % złączenia międzyfazowe — dla sygnałów prądowych (pierws 3 kolumn)
         ia = w(:,1); ib = w(:,2); ic = w(:,3);
         zero_seq = mean(ia + ib + ic);
         pos_seq = max(abs(ia + ib*exp(-1j*2*pi/3) + ic*exp(1j*2*pi/3)));
-        % dodatkowo: średnia i std dla motor_torque (kol.6) jako cechy globalne
-        torque_mean = mean(w(:,6));
-        torque_std  = std(w(:,6));
-        % spektralna z pierwszego kanału (ia)
-        Xf = fft(ia);
-        mag = abs(Xf(1:floor(windowLen/2)));
-        if numel(mag) > 2
-            [~, idx] = max(mag(2:end)); idx = idx+1;
-            domAmp = mag(idx);
-        else
-            domAmp = 0;
-        end
+        torque_mean = mean(w(:,6)); torque_std = std(w(:,6));
+        Xf = fft(ia); mag = abs(Xf(1:floor(windowLen/2)));
+        if numel(mag) > 2, [~, idx] = max(mag(2:end)); idx = idx+1; domAmp = mag(idx); else, domAmp = 0; end
         X = [X; f_phase, zero_seq, pos_seq, torque_mean, torque_std, domAmp];
     end
 end
 
-% Przygotuj macierze wejściowe dla fault i ok
-% Najpierw zrekonstruujemy macierze N x C dla jednego przypadku: kolumny są poskładane w ia_fault(:,i) itd.
-% Dla każdego case tworzymy macierz N x 6 i połączymy w długi zbiór (każdy case daje wiele okien)
-X_fault = [];
+%% Przygotowanie i Trening Sieci
+X_fault = []; Y_fault = [];
 for i = 1:nCases
     mat = [ia_fault(:,i), ib_fault(:,i), ic_fault(:,i), ialfa_fault(:,i), ibeta_fault(:,i), motor_torque_fault(:,i)];
     Xf = build_features_multi(mat, fs, windowLen, hop);
-    X_fault = [X_fault; Xf];
+    X_fault = [X_fault; Xf]; Y_fault = [Y_fault; repmat(errors(i), size(Xf,1), 1)];
 end
-
-% Z ok danych (przyjmujemy pojedynczy komplet poprawnych kanałów)
 mat_ok = [ia_poprawne, ib_poprawne, ic_poprawne, ialfa_poprawne, ibeta_poprawne, motor_torque_poprawne];
-X_ok = build_features_multi(mat_ok, fs, windowLen, hop);
+X_ok = build_features_multi(mat_ok, fs, windowLen, hop); Y_ok = zeros(size(X_ok,1),1);
 
-%% Etykiety nowe
-Y_fault = [];
-for i = 1:nCases
-    Xi = ia_fault(:,i); % tylko do policzenia liczby okien
-    mat = [ia_fault(:,i), ib_fault(:,i), ic_fault(:,i), ...
-           ialfa_fault(:,i), ibeta_fault(:,i), motor_torque_fault(:,i)];
-    Xf = build_features_multi(mat, fs, windowLen, hop);
-
-    % etykieta = numer błędu (np. 1,2,3…)
-    Y_fault = [Y_fault; repmat(errors(i), size(Xf,1), 1)];
-end
-
-% klasa 0 dla OK
-Y_ok = zeros(size(X_ok,1),1);
-
-% łączymy
-Yall = [Y_fault; Y_ok];
-
-
-%% Połącz i przetasuj
-Xall = [X_fault; X_ok];
-Yall = [Y_fault; Y_ok];
-perm = randperm(size(Xall,1));
-Xall = Xall(perm,:);
-Yall = Yall(perm);
-
-% Podział train/test
+Xall = [X_fault; X_ok]; Yall = [Y_fault; Y_ok]; perm = randperm(size(Xall,1));
+Xall = Xall(perm,:); Yall = Yall(perm);
 cv = cvpartition(Yall,'HoldOut',0.3);
 Xtrain = Xall(training(cv),:); Ytrain = Yall(training(cv));
-Xtest  = Xall(test(cv),:);     Ytest  = Yall(test(cv));
+Xtest = Xall(test(cv),:); Ytest = Yall(test(cv));
 
-%% Normalizacja (zachowujemy parametry do późniejszej normalizacji testów)
-mu = mean(Xtrain,1);
-sigma = std(Xtrain,[],1);
-sigma(sigma==0) = 1;
-Xtrain_norm = (Xtrain - mu) ./ sigma;
-Xtest_norm  = (Xtest  - mu) ./ sigma;
+mu = mean(Xtrain,1); sigma = std(Xtrain,[],1); sigma(sigma==0) = 1;
+Xtrain_norm = (Xtrain - mu) ./ sigma; Xtest_norm = (Xtest - mu) ./ sigma;
 
-%% Sieć neuronowa (prosty fully connected deep net)
-inputSize = size(Xtrain_norm,2);
-numClasses = numel(errors) + 1;
-
-layers = [
-    featureInputLayer(inputSize)
-
-    fullyConnectedLayer(256)
-    batchNormalizationLayer
-    reluLayer
-
-    fullyConnectedLayer(128)
-    batchNormalizationLayer
-    reluLayer
-    dropoutLayer(0.5)
-
-    fullyConnectedLayer(64)
-    reluLayer
-
-    fullyConnectedLayer(numClasses)
-    softmaxLayer
-    classificationLayer
-];
+inputSize = size(Xtrain_norm,2); numClasses = numel(unique(Yall));
+layers = [featureInputLayer(inputSize), ...
+          fullyConnectedLayer(256), ...
+          batchNormalizationLayer, ...
+          reluLayer, ...
+          fullyConnectedLayer(128), ...
+          batchNormalizationLayer, ...
+          reluLayer, ...
+          dropoutLayer(0.5), ...
+          fullyConnectedLayer(64), ...
+          reluLayer, ...
+          fullyConnectedLayer(numClasses), ...
+          softmaxLayer, ...
+          classificationLayer];
 
 options = trainingOptions('adam', ...
-    'MaxEpochs',80, ...
-    'MiniBatchSize',128, ...
-    'InitialLearnRate',1e-3, ...
-    'Verbose',false, ...
-    'Plots','none');
-
-% Przygotuj dane do trenowania (tabela lub ds)
+    'MaxEpochs', 60, ...
+    'MiniBatchSize', 128, ...
+    'LearnRateSchedule','piecewise', ...
+    'LearnRateDropFactor', 0.2, ...
+    'LearnRateDropPeriod', 20, ...
+    'Verbose', true, ...
+    'Plots', 'none');
 Ytrain_cat = categorical(Ytrain);
-dsTrain = arrayDatastore(Xtrain_norm,'IterationDimension',1);
-trainTbl = combine(dsTrain, arrayDatastore(Ytrain_cat));
-
-% Trenuj
 net = trainNetwork(Xtrain_norm, Ytrain_cat, layers, options);
 
-%% Ocena na zbiorze testowym
-Ypred_probs = predict(net, Xtest_norm); % Nx2 macierz prawdopodobieństw
-cats = categories(Ytrain_cat);           % {'0','1','2','4','8','16','32'}
+%% Ocena Wyników
+Ypred_probs = predict(net, Xtest_norm);
+cats = categories(Ytrain_cat);           
 [~, idxmax] = max(Ypred_probs,[],2);     
-Ypred = str2double(cats(idxmax));        % zamiana na oryginalne etykiety
+Ypred = str2double(cats(idxmax));        
+fprintf('Accuracy = %.2f%%\n', (sum(Ypred==Ytest)/numel(Ytest))*100);
+figure; confusionchart(Ytest, Ypred, 'Title', 'Multi-Class Fault Confusion Matrix');
 
+%% Bulk Processing - Strict Online Simulation with Printed Info
+plot_dir = './plots_multi/';
+if ~exist(plot_dir, 'dir'), mkdir(plot_dir); end
+files = dir(fullfile(path_data, '*_faultType0.mat'));
 
-confMat = confusionmat(Ytest, Ypred);
-disp('Confusion matrix (rows=true, cols=predicted):');
-disp(confMat);
-acc = sum(Ypred==Ytest)/numel(Ytest);
-fprintf('Accuracy = %.2f%%\n', acc*100);
+% Mapping for labels
+error_vals = [0, errors];
+error_names = ["Healthy", "Fault 1", "Fault 2", "Fault 4", "Fault 8", "Fault 16", "Fault 32"];
 
-%% Parametry "online"
+dt = 1/fs; 
+mu_val = mu; sigma_val = sigma; 
+net_gpu = net; 
+all_files_latencies = nan(length(files), 1); 
+
 fprintf('================================== \n')
-windowLen_samples = windowLen;    % długość okna w próbkach
-hop_samples = 1;            % przesunięcie okna o 1 próbkę
-dt = 1/fs;                  % krok czasowy
+fprintf('Starting parallel bulk plot generation (Multi-class Online)...\n')
 
-% -----------------------------
-% Losowanie sygnału błędu do sprawdzenia
-% -----------------------------
-rng('shuffle');
-all_cases = [errors, 0];
-chosen_case = all_cases(randi(length(all_cases)));
-
-if chosen_case == 0
-    fprintf('Wybrano losowo sygnał OK (bez błędu)\n');
-    mat_signal = mat_ok;
-else
-    idx = find(errors == chosen_case);
-    fprintf('Wybrano losowo sygnał z błędem numer: %d\n', chosen_case);
-    S = load(sprintf('%s%s%d%s', path_data, 'fault', chosen_case, '_faultType0.mat'));
-    mat_signal = [S.ia, S.ib, S.ic, S.ialfa, S.ibeta, S.motor_torque];
-end
-
-nSamples = size(mat_signal,1);
-fault_start_idx = tailStart;
-
-all_cats = [0, errors];
-cat_str = cellstr(string(all_cats));
-
-confirmation_window = 5;
-recent_preds = [];
-found_fault = false;
-fault_armed = true;   % pozwala wykryć nowy błąd dopiero po resecie
-
-pred_over_time = NaN(nSamples,1);
-
-for s = 1:hop_samples:(nSamples - windowLen_samples + 1)
-
-    window = mat_signal(s:s+windowLen_samples-1, :);
-
-    % --- Cechy
-    Xwin = build_features_multi(window, fs, windowLen_samples, windowLen_samples);
-
-    % --- Normalizacja
-    Xwin_norm = (Xwin - mu) ./ sigma;
-
-    % --- Predykcja
-    Yprob = predict(net, Xwin_norm);
-    [~, idxmax] = max(Yprob,[],2);
-    Ypred_win = str2double(cat_str(idxmax));
-
-    % zapisz predykcję w czasie
-    pred_over_time(s+windowLen_samples-1) = Ypred_win;
-
-    % --- Okno potwierdzające
-    recent_preds = [recent_preds, Ypred_win];
-    if numel(recent_preds) > confirmation_window
-        recent_preds = recent_preds(end-confirmation_window+1:end);
-    end
-
-    % --- Logika potwierdzenia
-    if numel(recent_preds) == confirmation_window ...
-            && numel(unique(recent_preds)) == 1
-
-        detected_class = recent_preds(1);
-
-        % === Wykrycie błędu ===
-        if detected_class ~= 0 && fault_armed ...
-                && (chosen_case ~= 0 && s >= fault_start_idx)
-
-            windowEnd = s + windowLen_samples - 1;
-            windowEnd_time = (windowEnd - fault_start_idx) * dt;
-
-            fprintf('----------------------------------\n');
-            fprintf('Błąd potwierdzony w próbce %d\n', windowEnd);
-            fprintf('Czas od wystąpienia błędu: %.1f ms\n', windowEnd_time*1000);
-            fprintf('Przewidziany numer błędu: %d\n', detected_class);
-
-            found_fault = true;
-            fault_armed = false;   % blokada przed kolejnym wykryciem
+parfor f = 1:length(files)
+    filename = files(f).name;
+    
+    % --- Determine True Label for Title ---
+    true_desc = "Healthy"; 
+    for e_idx = 1:length(errors)
+        if contains(filename, sprintf('fault%d_', errors(e_idx)))
+            true_desc = error_names(e_idx + 1);
+            break;
         end
-
-        % === Reset uzbrojenia po powrocie do klasy 0 ===
     end
+    
+    case_label = erase(filename, '_faultType0.mat');
+    S_curr = load(fullfile(path_data, filename));
+    mat_signal = [S_curr.ia, S_curr.ib, S_curr.ic, S_curr.ialfa, S_curr.ibeta, S_curr.motor_torque];
+    nSamples = size(mat_signal,1);
+    
+    pred_over_time = zeros(nSamples,1);
+    found_fault_local = false;
+    det_time_local = NaN;
+
+    % --- Online Simulation Loop ---
+    for s = windowLen:nSamples
+        % 1. Extract Buffer (Online sliding window)
+        window = mat_signal(s-windowLen+1:s, :);
+        
+        % 2. Feature Extraction & Prediction
+        % Note: build_features_multi used here with hop=windowLen returns 1 row
+        Xwin = build_features_multi(window, fs, windowLen, windowLen);
+        Xwin_norm = (Xwin - mu_val) ./ sigma_val;
+        
+        Yprob = predict(net_gpu, Xwin_norm, 'ExecutionEnvironment', 'auto');
+        [~, idx] = max(Yprob,[],2);
+        
+        current_pred = str2double(cats(idx));
+        pred_over_time(s) = current_pred;
+        
+        % 3. Real-time Detection Logic
+        if ~found_fault_local && current_pred > 0 && s >= tailStart
+            det_time_local = (s - tailStart) * dt;
+            found_fault_local = true;
+        end
+    end
+    
+    all_files_latencies(f) = det_time_local;
+
+    % --- Generate Plot ---
+    t_plot = (0:nSamples-1) * dt;
+    hFig = figure('Visible', 'off'); 
+    
+    yyaxis left
+    plot(t_plot, mat_signal(:,6), 'b'); 
+    ylabel('Torque [Nm]');
+    grid on;
+    
+    yyaxis right
+    stairs(t_plot, pred_over_time, 'r', 'LineWidth', 1.2); 
+    ylabel('Classification');
+    yticks(error_vals);
+    yticklabels(error_names);
+    ylim([-1 max(errors) + 5]); 
+    
+    xlabel('Time [s]');
+    title({['File: ', strrep(case_label, '_', '\_')], ...
+           ['Actual Status: ', char(true_desc)]});
+    
+    % Add indicator for fault injection point
+    xline(tailStart * dt, '--k', 'Fault Start');
+
+    saveas(hFig, fullfile(plot_dir, strrep(filename, '.mat', '_multi_plot.png')));
+    
+    % --- Printed Info (Restored) ---
+    if found_fault_local
+        fprintf('File: %s | True: %s | Det. Time: %.2f ms\n', filename, true_desc, det_time_local * 1000);
+    else
+        fprintf('File: %s | True: %s | NO FAULT DETECTED\n', filename, true_desc);
+    end
+    close(hFig);
 end
 
-if ~found_fault
-    fprintf('Błąd nie został wykryty w sygnale.\n');
+%% Statistical Report (Restored)
+valid_latencies = all_files_latencies(~isnan(all_files_latencies)) * 1000; 
+detection_rate = (sum(~isnan(all_files_latencies)) / length(files)) * 100;
+fprintf('\n================ MULTI-CLASS STATISTICAL REPORT ================\n');
+fprintf('Total Files Processed: %d\n', length(files));
+fprintf('Detection Rate: %.2f%%\n', detection_rate);
+if ~isempty(valid_latencies)
+    fprintf('Mean Detection Time: %.2f ms\n', mean(valid_latencies));
+    fprintf('Std Deviation: %.2f ms\n', std(valid_latencies));
+    figure; histogram(valid_latencies, 15, 'FaceColor', '#D95319'); 
+    xlabel('Latency [ms]'); ylabel('Count');
+    title('Detection Latency Distribution');
 end
-
-
-%% Rysowanie wykresu torque z predykcjami
-torque = mat_signal(:,end);
-time = (0:nSamples-1) * dt;
-
-figure;
-yyaxis left
-plot(time, torque, 'b', 'LineWidth', 1.2);
-ylabel('Torque')
-ylim([min(torque) max(torque)])  % opcjonalnie dopasuj
-
-yyaxis right
-plot(time, pred_over_time, 'r', 'LineWidth', 1.2);
-ylabel('Predykcja')
-ylim([min(pred_over_time-2) max(pred_over_time+2)])  % opcjonalnie dopasuj
-
-xlabel('Czas [s]')
-title('Predykcje nałożone na torque (dwie osie Y)')
-grid on
-legend({'Torque','Predykcja'}, Location='best')
-
-

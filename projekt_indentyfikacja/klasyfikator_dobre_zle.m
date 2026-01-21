@@ -205,7 +205,7 @@ fprintf('Accuracy = %.2f%%\n', acc * 100);
 % AUC
 scoresPos = Ypred_probs(:, 2);
 [Xroc, Yroc, ~, AUC] = perfcurve(Ytest, scoresPos, 1);
-fprintf('AUC = %.3f\n', AUC);
+% fprintf('AUC = %.3f\n', AUC);
 
 %% Bulk Processing with Multicore and GPU Support
 plot_dir = './plots_binary/';
