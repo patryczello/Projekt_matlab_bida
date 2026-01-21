@@ -208,7 +208,7 @@ scoresPos = Ypred_probs(:, 2);
 fprintf('AUC = %.3f\n', AUC);
 
 %% Bulk Processing with Multicore and GPU Support
-plot_dir = './plots/';
+plot_dir = './plots_binary/';
 if ~exist(plot_dir, 'dir')
     mkdir(plot_dir);
 end
