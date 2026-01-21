@@ -154,10 +154,12 @@ scoresPos = Ypred_probs(:,2);
 [~,~,~,AUC] = perfcurve(Ytest,scoresPos,1);
 fprintf('Zbiorcza AUC = %.3f\n', AUC);
 
-%% ===== Bulk processing: predykcja + głosowanie + zapis wykresów =====
+%% ===== Bulk processing: predykcja + głosowanie + zapis wykresów + macierz pomyłek =====
 plot_dir = './plots_binary/';
+matrix_dir = './matrix/';
 if ~exist(plot_dir,'dir'); mkdir(plot_dir); end
-voteLen = 10;
+if ~exist(matrix_dir,'dir'); mkdir(matrix_dir); end
+voteLen = 200;
 
 files = dir(fullfile(path_data,'*_faultType0.mat'));
 for f = 1:length(files)
@@ -187,47 +189,84 @@ for f = 1:length(files)
         Xwin_norm = (Xwin - mu) ./ sigma;
         Yprob = predict(net, Xwin_norm);
         [~, idxmax] = max(Yprob,[],2);
-        Ypred = idxmax-1;
-        Ypred_all(s) = Ypred;
+        Ypred_all(s) = idxmax-1;
+    end
 
-        % głosowanie
-        voteBuffer = [voteBuffer(2:end); Ypred];
-        if sum(voteBuffer) >= ceil(voteLen/2)
-            Ypred_vote(s) = 1;
+    % mocniejsze wygładzenie predykcji
+    Ypred_all_filtered = medfilt1(Ypred_all,100);       % filtr medianowy
+    Ypred_all_filtered = movmean(Ypred_all_filtered,80); % opcjonalne dodatkowe wygładzenie średnią
+    Ypred_all_filtered = Ypred_all_filtered > 0.5;    % progowanie
+
+    % ---- Głosowanie ----
+    for s = 1:nSamples
+        if s < tailStart
+            Ypred_vote(s) = 0; % ignorujemy próbki przed tailStart
         else
-            Ypred_vote(s) = 0;
-        end
+            voteBuffer = [voteBuffer(2:end); Ypred_all_filtered(s)];
+            if sum(voteBuffer) >= ceil(voteLen*0.7) % wyższy próg
+                Ypred_vote(s) = 1;
+            else
+                Ypred_vote(s) = 0;
+            end
 
-        if ~found_fault_vote && Ypred_vote(s)==1 && s>=tailStart
-            first_detection_vote = (s-tailStart)*dt;
-            found_fault_vote = true;
+            if ~found_fault_vote && Ypred_vote(s)==1
+                first_detection_vote = (s-tailStart)*dt;
+                found_fault_vote = true;
+            end
         end
     end
 
-    % ---- Wykresy z głosowaniem ----
+    % ---- Wykresy w jednym figure z 2 subplotami ----
     t_plot = (0:nSamples-1)*dt;
     torque_plot = mat_signal(:,6);
 
     hFig = figure('Visible','off');
+
+    subplot(2,1,1)
     yyaxis left
     plot(t_plot, torque_plot,'b','LineWidth',1.2); grid on;
     ylabel('Torque [Nm]');
+    yyaxis right
+    stairs(t_plot, Ypred_all,'r','LineWidth',1.5); ylim([-0.1 1.1]);
+    ylabel('Detekcja bez głosowania');
+    xlabel('Time [s]');
+    title(sprintf('%s - predykcja bez głosowania', case_label));
 
+    % ---- Dodanie linii pionowej pierwszego wykrycia bez głosowania ----
+    idx_fault_novote = find(Ypred_all==1 & (1:nSamples)'>=tailStart,1,'first');
+    if ~isempty(idx_fault_novote)
+        xline(t_plot(idx_fault_novote),'--r','LineWidth',1.2,'Label','Wykrycie bez głosowania','LabelOrientation','horizontal');
+    end
+
+    subplot(2,1,2)
+    yyaxis left
+    plot(t_plot, torque_plot,'b','LineWidth',1.2); grid on;
+    ylabel('Torque [Nm]');
     yyaxis right
     stairs(t_plot, Ypred_vote,'r','LineWidth',1.5); ylim([-0.1 1.1]);
-    ylabel('Detekcja (0 / 1)');
-
+    ylabel('Detekcja z głosowaniem');
     xlabel('Time [s]');
     if found_fault_vote
-        title(sprintf('%s - pierwsze wykrycie (głosowanie): %.2f ms', case_label, first_detection_vote*1000));
+        title(sprintf('Pierwsze wykrycie (głosowanie): %.2f ms', first_detection_vote*1000));
     else
-        title(sprintf('%s - brak wykrycia błędu (głosowanie)', case_label));
+        title('Brak wykrycia błędu (głosowanie)');
     end
 
     saveas(hFig, fullfile(plot_dir,[case_label,'_plot.png']));
     close(hFig);
 
-    fprintf('Zapisano wykres z głosowaniem: %s\n', case_label);
+    fprintf('Zapisano wykres z głosowaniem i bez głosowania: %s\n', case_label);
+
+    % ---- Macierz pomyłek dla każdego przypadku ----
+    Ytrue_case = [zeros(tailStart-1,1); ones(nSamples-tailStart+1,1)];
+    hFigMatrix = figure('Visible','off');
+    confusionchart(Ytrue_case,Ypred_vote,'Title',sprintf('Macierz pomyłek - %s', case_label),...
+        'ColumnSummary','column-normalized','RowSummary','row-normalized');
+    saveas(hFigMatrix, fullfile(matrix_dir, ['matrix_fault_', case_label, '.png']));
+    close(hFigMatrix);
+
+    fprintf('Zapisano macierz pomyłek: matrix_fault_%s.png\n', case_label);
 end
 
-fprintf('Wszystkie wykresy binary z głosowaniem zapisane w folderze: %s\n', plot_dir);
+fprintf('Wszystkie wykresy i macierze pomyłek zapisane.\n');
+
