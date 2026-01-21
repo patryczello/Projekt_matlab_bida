@@ -242,45 +242,46 @@ Ypred = idxmax - 1; % klasy 0/1
 
 % Obliczanie macierzy pomyłek
 confMat = confusionmat(Ytest, Ypred);
-%% ===== Zapis macierzy pomyłek =====
+%% ===== Zapis macierzy pomyłek (PNG) + statystyki + AUC =====
 matrix_dir = './matrix/';
 if ~exist(matrix_dir, 'dir')
     mkdir(matrix_dir);
 end
 
-% zapis do MAT
-save(fullfile(matrix_dir,'confusion_matrix.mat'), 'confMat');
+% numer błędu (np. errors = 1 albo 1:5)
+case_number = errors(1);   % jeśli masz wiele – tu logicznie jest zbiorcza macierz
 
-% zapis do CSV
-writematrix(confMat, fullfile(matrix_dir,'confusion_matrix.csv'));
-
-% zapis jako PNG
+% ===== Wykres macierzy pomyłek (do zapisu) =====
 hFig = figure('Visible','off');
 confusionchart(Ytest, Ypred, ...
-    'Title','Confusion Matrix', ...
-    'ColumnSummary','column-normalized', ...
-    'RowSummary','row-normalized');
-saveas(hFig, fullfile(matrix_dir,'confusion_matrix.png'));
-close(hFig);
-
-fprintf('Macierz pomyłek zapisana do folderu: %s\n', matrix_dir);
-
-
-% Poprawne wyświetlanie - użyj confusionchart zamiast plot
-figure;
-confusionchart(Ytest, Ypred, ...
-    'Title', 'Confusion Matrix', ...
+    'Title', sprintf('Macierz pomyłek dla błędu %d', case_number), ...
     'ColumnSummary', 'column-normalized', ...
     'RowSummary', 'row-normalized');
 
-% Statystyki
+fname = fullfile(matrix_dir, ...
+    sprintf('confusion_matrix_%d.png', case_number));
+
+saveas(hFig, fname);
+close(hFig);
+
+fprintf('Macierz pomyłek zapisana do pliku: %s\n', fname);
+
+% ===== (Opcjonalnie) Wyświetlenie na ekran =====
+figure;
+confusionchart(Ytest, Ypred, ...
+    'Title', sprintf('Macierz pomyłek dla błędu %d', case_number), ...
+    'ColumnSummary', 'column-normalized', ...
+    'RowSummary', 'row-normalized');
+
+% ===== Statystyki =====
 acc = sum(Ypred == Ytest) / numel(Ytest);
 fprintf('Accuracy = %.2f%%\n', acc * 100);
 
-% AUC
-scoresPos = Ypred_probs(:, 2);
+% ===== AUC =====
+scoresPos = Ypred_probs(:, 2);   % prawdopodobieństwo klasy FAULT
 [Xroc, Yroc, ~, AUC] = perfcurve(Ytest, scoresPos, 1);
-% fprintf('AUC = %.3f\n', AUC);
+fprintf('AUC = %.3f\n', AUC);
+
 
 %% Bulk Processing with Multicore and GPU Support
 plot_dir = './plots_binary/';
