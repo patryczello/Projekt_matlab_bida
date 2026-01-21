@@ -29,6 +29,54 @@ ialfa_fault = zeros(nTail, nCases);
 ibeta_fault = zeros(nTail, nCases);
 motor_torque_fault = zeros(nTail, nCases);
 
+%% ===== Oś czasu dla danych fault =====
+dt = 1/fs;
+t_fault = (0:nTail-1) * dt;
+
+%% ===== Folder na wykresy danych treningowych =====
+train_plot_dir = './training_data/';
+if ~exist(train_plot_dir, 'dir')
+    mkdir(train_plot_dir);
+end
+
+%% ===== Wykresy przykładowych danych fault do treningu =====
+for i = 1:nCases
+    case_number = errors(i);
+
+    hFig = figure('Visible','off');
+
+    subplot(3,1,1)
+    plot(t_fault, ia_fault(:,i),'r', ...
+         t_fault, ib_fault(:,i),'g', ...
+         t_fault, ic_fault(:,i),'b','LineWidth',1.1);
+    grid on;
+    ylabel('Prądy [A]');
+    title(['Fault ', num2str(case_number), ' — prądy fazowe']);
+    legend('i_a','i_b','i_c');
+
+    subplot(3,1,2)
+    plot(t_fault, ialfa_fault(:,i),'m', ...
+         t_fault, ibeta_fault(:,i),'c','LineWidth',1.1);
+    grid on;
+    ylabel('\alpha\beta');
+    title('Składowe Clarke');
+    legend('\alpha','\beta');
+
+    subplot(3,1,3)
+    plot(t_fault, motor_torque_fault(:,i),'k','LineWidth',1.2);
+    grid on;
+    ylabel('Moment [Nm]');
+    xlabel('Czas [s]');
+    title('Moment elektromagnetyczny');
+
+    fname = fullfile(train_plot_dir, ...
+        sprintf('fault%d_plot.png', case_number));
+    saveas(hFig, fname);
+    close(hFig);
+end
+
+fprintf('Zapisano wykresy danych treningowych do folderu: %s\n', train_plot_dir);
+
 % Wczytaj pliki i zapisz tail
 for i = 1:nCases
     case_number = errors(i);
@@ -183,13 +231,40 @@ net = trainNetwork(Xtrain_norm, Ytrain_cat, layers, options);
 
 %% Ocena na zbiorze testowym
 Ypred_probs = predict(net, Xtest_norm); % Nx2 macierz prawdopodobieństw
+%% ===== Folder na wykresy prawdopodobieństwa =====
+prob_plot_dir = './training_data/probability/';
+if ~exist(prob_plot_dir, 'dir')
+    mkdir(prob_plot_dir);
+end
+
 [~, idxmax] = max(Ypred_probs, [], 2);
 Ypred = idxmax - 1; % klasy 0/1
 
 % Obliczanie macierzy pomyłek
 confMat = confusionmat(Ytest, Ypred);
-disp('Confusion matrix (rows=true, cols=predicted):');
-disp(confMat);
+%% ===== Zapis macierzy pomyłek =====
+matrix_dir = './matrix/';
+if ~exist(matrix_dir, 'dir')
+    mkdir(matrix_dir);
+end
+
+% zapis do MAT
+save(fullfile(matrix_dir,'confusion_matrix.mat'), 'confMat');
+
+% zapis do CSV
+writematrix(confMat, fullfile(matrix_dir,'confusion_matrix.csv'));
+
+% zapis jako PNG
+hFig = figure('Visible','off');
+confusionchart(Ytest, Ypred, ...
+    'Title','Confusion Matrix', ...
+    'ColumnSummary','column-normalized', ...
+    'RowSummary','row-normalized');
+saveas(hFig, fullfile(matrix_dir,'confusion_matrix.png'));
+close(hFig);
+
+fprintf('Macierz pomyłek zapisana do folderu: %s\n', matrix_dir);
+
 
 % Poprawne wyświetlanie - użyj confusionchart zamiast plot
 figure;
@@ -315,13 +390,20 @@ found_fault = false;
 first_detection_time = NaN;
 fault_start_idx = tailStart;
 
+%% Parametry głosowania
+voteLen = 10;                     % długość okna głosowania
+voteBuffer = zeros(voteLen,1);    % bufor głosów
+Ypred_vote = zeros(nSamples,1);   % wyniki po głosowaniu
+
+found_fault_vote = false;
+first_detection_time_vote = NaN;
+
+%% Główna pętla z klasyfikacją
 for s = 1:nSamples
 
-    % ===== Budowa okna z zerami na początku =====
+    % ===== Budowa okna =====
     window = zeros(windowLen_samples, nChannels);
-
     if s < windowLen_samples
-        % wypełniamy końcówkę okna dostępnymi próbkami
         window(end-s+1:end, :) = mat_signal(1:s, :);
     else
         window(:, :) = mat_signal(s-windowLen_samples+1:s, :);
@@ -336,71 +418,92 @@ for s = 1:nSamples
     % ===== Predykcja =====
     Yprob = predict(net, Xwin_norm);
     [~, idxmax] = max(Yprob,[],2);
-    Ypred = idxmax - 1;   % 0 / 1
+    Ypred = idxmax - 1;
 
     % ===== Zapis wyniku =====
     Ypred_all(s) = Ypred;
 
-    % ===== Detekcja pierwszego błędu po fault_start_idx =====
+    % ================= GŁOSOWANIE =================
+    % przesuwamy bufor i dodajemy nowy wynik
+    voteBuffer = [voteBuffer(2:end); Ypred];
+
+    % policz liczbę "1" w buforze
+    nVotes = sum(voteBuffer);
+
+    % jeśli liczba 1 >= 6 → głosujemy "1"
+    if nVotes >= ceil(voteLen/2)
+        Ypred_vote(s) = 1;
+    else
+        Ypred_vote(s) = 0;
+    end
+
+    % ===== Detekcja pierwszego błędu (głosowanie) =====
+    if ~found_fault_vote && Ypred_vote(s) == 1 && s >= fault_start_idx
+        first_detection_time_vote = (s - fault_start_idx) * dt;
+        found_fault_vote = true;
+    end
+
+    % ===== Detekcja pierwszego błędu (oryginalna) =====
     if ~found_fault && Ypred == 1 && s >= fault_start_idx
         first_detection_time = (s - fault_start_idx) * dt;
         found_fault = true;
-
-        fprintf('Błąd wykryty w próbce %d.\n', s);
-        fprintf('Czas od wystąpienia błędu: %.1f ms\n', ...
-                first_detection_time * 1000);
     end
+
 end
 
 if ~found_fault
-    fprintf('Błąd nie został wykryty w sygnale.\n');
+    fprintf('Błąd nie został wykryty przy metodzie ORYGINALNEJ.\n');
+end
+if ~found_fault_vote
+    fprintf('Błąd nie został wykryty przy metodzie GŁOSOWANIA.\n');
 end
 
-%% Oś czasu
+%% Czas osi
 t = (0:nSamples-1) * dt;
-
-%% Dane do wykresu
 torque = mat_signal(:,6);
 
+%% ===== WYKRESY =====
 figure;
+
+subplot(2,1,1);
 yyaxis left
 plot(t, torque, 'b', 'LineWidth', 1.2);
-ylabel('Torque [Nm]');
-grid on;
+ylabel('Torque [Nm]'); grid on;
 
 yyaxis right
 stairs(t, Ypred_all, 'r', 'LineWidth', 1.5);
-ylabel('Klasyfikacja (0 / 1)');
+ylabel('Detekcja (0 / 1)');
 ylim([-0.1 1.1]);
-
+title('Oryginalna detekcja błędu');
 xlabel('Czas [s]');
-title('Moment elektromagnetyczny oraz wynik detekcji błędu');
+legend('Torque','Detekcja ORYGINALNA','Location','best');
 
-legend('Torque', 'Detekcja błędu', 'Location', 'best');
+subplot(2,1,2);
+yyaxis left
+plot(t, torque, 'b', 'LineWidth', 1.2);
+ylabel('Torque [Nm]'); grid on;
 
-%% Statistical Analysis of Detection Times
-valid_latencies = all_files_latencies(~isnan(all_files_latencies)) * 1000; % Convert to ms
-detection_rate = (sum(~isnan(all_files_latencies)) / length(all_files_latencies)) * 100;
+yyaxis right
+stairs(t, Ypred_vote, 'm', 'LineWidth', 1.5);
+ylabel('Detekcja (0 / 1)');
+ylim([-0.1 1.1]);
+title('Detekcja błędu z GŁOSOWANIEM');
+xlabel('Czas [s]');
+legend('Torque','Detekcja z GŁOSOWANIEM','Location','best');
 
-fprintf('\n================ STATISTICAL REPORT ================\n');
-fprintf('Total files processed: %d\n', length(files));
-fprintf('Detection Rate:        %.2f%%\n', detection_rate);
+%% ===== Raport czasów detekcji =====
+fprintf('\n=================== CZASY DETEKCJI ===================\n');
 
-if ~isempty(valid_latencies)
-    fprintf('Mean Detection Time:   %.2f ms\n', mean(valid_latencies));
-    fprintf('Median Detection Time: %.2f ms\n', median(valid_latencies));
-    fprintf('Min Detection Time:    %.2f ms\n', min(valid_latencies));
-    fprintf('Max Detection Time:    %.2f ms\n', max(valid_latencies));
-    fprintf('Std Deviation:         %.2f ms\n', std(valid_latencies));
-
-    % Plot Histogram of Latencies
-    figure;
-    histogram(valid_latencies, 15, 'FaceColor', '#0072BD');
-    grid on;
-    xlabel('Detection Latency [ms]');
-    ylabel('Number of Cases');
-    title('Distribution of Fault Detection Times');
+if found_fault
+    fprintf('Pierwsze wykrycie (oryginalne):      %.2f ms\n', first_detection_time * 1000);
 else
-    fprintf('No faults were detected in the provided dataset.\n');
+    fprintf('Brak wykrycia metodą oryginalną.\n');
 end
-fprintf('====================================================\n');
+
+if found_fault_vote
+    fprintf('Pierwsze wykrycie (głosowanie):      %.2f ms\n', first_detection_time_vote * 1000);
+else
+    fprintf('Brak wykrycia metodą głosowania.\n');
+end
+
+fprintf('=====================================================\n');
