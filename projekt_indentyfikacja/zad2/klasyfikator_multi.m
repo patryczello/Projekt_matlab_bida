@@ -28,27 +28,48 @@ for i = 1:nCases
     motor_torque_fault(:,i) = S.motor_torque(tailStart:end,1);
 end
 
-%% 2. Funkcja budująca cechy (No changes to logic, just usage)
+%% 2. Funkcja budująca cechy (Improved Diagnostics)
 function X = build_features_multi(mat, ~, windowLen, hop)
     n = size(mat,1); C = size(mat,2); X = [];
     for s = 1:hop:(n - windowLen + 1)
         w = mat(s:s+windowLen-1, :); f_phase = [];
         for p = 1:C
             x = w(:,p);
-            f_phase = [f_phase, rms(x), std(x), max(x), min(x), skewness(x), kurtosis(x)];
+            curr_rms = rms(x);
+            % Enhanced Feature Set: Focus on Shape and Intensity
+            % Removed: individual min/max (unstable for FCNs)
+            % Added: Peak-to-Peak, Crest Factor
+            p2p = max(x) - min(x);
+            crest = max(abs(x)) / (curr_rms + 1e-6);
+            f_phase = [f_phase, curr_rms, std(x), skewness(x), kurtosis(x), p2p, crest];
         end
+        
         ia = w(:,1); ib = w(:,2); ic = w(:,3);
+        % Sequence Analysis
         zero_seq = mean(ia + ib + ic);
         pos_seq = max(abs(ia + ib*exp(-1j*2*pi/3) + ic*exp(1j*2*pi/3)));
+        
+        % Torque Metrics
         torque_mean = mean(w(:,6)); torque_std = std(w(:,6));
+        
+        % Spectral Analysis (THD and Dominant Amplitude)
         Xf = fft(ia); mag = abs(Xf(1:floor(windowLen/2)));
-        if numel(mag) > 2, [~, idx] = max(mag(2:end)); idx = idx+1; domAmp = mag(idx); else, domAmp = 0; end
-        X = [X; f_phase, zero_seq, pos_seq, torque_mean, torque_std, domAmp];
+        if numel(mag) > 2
+            [maxAmp, idx] = max(mag(2:end)); 
+            % THD Estimate: ratio of harmonics to fundamental
+            thd_val = sqrt(sum(mag.^2) - maxAmp^2) / (maxAmp + 1e-6);
+            domAmp = maxAmp;
+        else
+            domAmp = 0; thd_val = 0; 
+        end
+        
+        X = [X; f_phase, zero_seq, pos_seq, torque_mean, torque_std, domAmp, thd_val];
     end
 end
 
 %% 3. Przygotowanie i Trening Sieci
 Xall = []; Yall = [];
+fprintf('Extracting features from %d cases...\n', nCases);
 for i = 1:nCases
     mat = [ia_fault(:,i), ib_fault(:,i), ic_fault(:,i), ialfa_fault(:,i), ibeta_fault(:,i), motor_torque_fault(:,i)];
     Xf = build_features_multi(mat, fs, windowLen, hop);
@@ -56,9 +77,7 @@ for i = 1:nCases
     Yall = [Yall; repmat(errors(i), size(Xf,1), 1)];
 end
 
-% STRICT MAPPING: Force 1:63 categorical levels
 Yall_cat = categorical(Yall, 1:63); 
-
 perm = randperm(size(Xall,1));
 Xall = Xall(perm,:); Yall_cat = Yall_cat(perm);
 
@@ -73,13 +92,21 @@ inputSize = size(Xtrain_norm,2);
 numClasses = 63;
 
 layers = [featureInputLayer(inputSize)
+          
           fullyConnectedLayer(512)
           batchNormalizationLayer
           reluLayer
-          dropoutLayer(0.3)
+          dropoutLayer(0.2)
+          
           fullyConnectedLayer(256)
           batchNormalizationLayer
           reluLayer
+          dropoutLayer(0.3)
+          
+          fullyConnectedLayer(128) 
+          batchNormalizationLayer
+          reluLayer
+          
           fullyConnectedLayer(numClasses)
           softmaxLayer
           classificationLayer];
@@ -87,10 +114,11 @@ layers = [featureInputLayer(inputSize)
 options = trainingOptions('adam', ...
     'MaxEpochs', 500, ...
     'MiniBatchSize', 256, ...
-    'InitialLearnRate', 1e-2, ...
+    'InitialLearnRate', 1e-3, ... % Balanced starting rate
     'LearnRateSchedule','piecewise', ...
-    'LearnRateDropFactor', 0.1, ...
+    'LearnRateDropFactor', 0.5, ...
     'LearnRateDropPeriod', 100, ...
+    'L2Regularization', 1e-4, ...
     'Shuffle', 'every-epoch', ...
     'Verbose', true, ...
     'Plots', 'none');
@@ -99,7 +127,8 @@ net = trainNetwork(Xtrain_norm, Ytrain, layers, options);
 
 %% 4. Ocena Wyników
 Ypred = classify(net, Xtest_norm);
-fprintf('Accuracy = %.2f%%\n', (sum(Ypred == Ytest)/numel(Ytest))*100);
+accuracy = (sum(Ypred == Ytest)/numel(Ytest))*100;
+fprintf('Final Test Accuracy = %.2f%%\n', accuracy);
 figure; confusionchart(Ytest, Ypred, 'Title', '63-Class Fault Matrix');
 
 %% 5. Bulk Processing - Online Simulation
@@ -107,13 +136,9 @@ plot_dir = './plots_multi/';
 if ~exist(plot_dir, 'dir'), mkdir(plot_dir); end
 files = dir(fullfile(path_data, '*_faultType0.mat'));
 
-% Extract category list for safe mapping inside parfor
-net_cats = categories(Ytrain); 
 mu_v = mu; sigma_v = sigma;
-
 parfor f = 1:length(files)
     filename = files(f).name;
-    % Detect true label from filename
     true_desc = "Unknown";
     for e_val = 1:63
         if contains(filename, sprintf('fault%d_', e_val))
@@ -126,23 +151,22 @@ parfor f = 1:length(files)
     nSamples = size(mat_signal,1);
     pred_over_time = zeros(nSamples,1);
     
-    % Online Loop
-    for s = windowLen:100:nSamples % Step by 100 to speed up simulation
+    for s = windowLen:100:nSamples
         window = mat_signal(s-windowLen+1:s, :);
-        Xf = build_features_multi(window, fs, windowLen, windowLen);
-        X_norm = (Xf - mu_v) ./ sigma_v;
+        Xf_win = build_features_multi(window, fs, windowLen, windowLen);
+        X_norm = (Xf_win - mu_v) ./ sigma_v;
         
-        [Yp, scores] = classify(net, X_norm);
-        % Map the categorical back to numeric
+        Yp = classify(net, X_norm);
         pred_over_time(s-99:s) = str2double(char(Yp));
     end
     
     % --- Plotting ---
     t = (0:nSamples-1)/fs;
     h = figure('Visible', 'off');
-    yyaxis left; plot(t, mat_signal(:,6)); ylabel('Torque');
-    yyaxis right; stairs(t, pred_over_time, 'r'); ylabel('Class (1-63)');
-    ylim([0 65]); title(sprintf('File: %s | True: %s', filename, true_desc));
+    yyaxis left; plot(t, mat_signal(:,6)); ylabel('Torque [Nm]');
+    yyaxis right; stairs(t, pred_over_time, 'r', 'LineWidth', 1.2); ylabel('Predicted Fault ID');
+    ylim([0 65]); grid on;
+    title({['File: ', strrep(filename, '_', '\_')], ['Status: ', char(true_desc)]});
     xline(tailStart/fs, '--k', 'Fault Start');
     saveas(h, fullfile(plot_dir, [filename '.png']));
     close(h);
