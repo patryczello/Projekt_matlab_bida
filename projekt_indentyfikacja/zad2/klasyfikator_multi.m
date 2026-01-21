@@ -226,16 +226,74 @@ parfor f = 1:length(files)
 end
 
 
-%% Statistical Report (Restored)
-valid_latencies = all_files_latencies(~isnan(all_files_latencies)) * 1000; 
+%% ================= MULTI-CLASS STATISTICAL REPORT =================
+
+% Latencje w ms
+valid_latencies = all_files_latencies(~isnan(all_files_latencies)) * 1000;
+
+% Ogólny wskaźnik wykryć
 detection_rate = (sum(~isnan(all_files_latencies)) / length(files)) * 100;
-fprintf('\n================ MULTI-CLASS STATISTICAL REPORT ================\n');
-fprintf('Total Files Processed: %d\n', length(files));
-fprintf('Detection Rate: %.2f%%\n', detection_rate);
+
+% ===== Zapis do pliku =====
+fileID = fopen('multi_class_report.txt','w');
+fprintf(fileID, '================ MULTI-CLASS STATISTICAL REPORT ================\n\n');
+fprintf(fileID, 'Total Files Processed: %d\n', length(files));
+fprintf(fileID, 'Overall Detection Rate: %.2f%%\n', detection_rate);
+
 if ~isempty(valid_latencies)
-    fprintf('Mean Detection Time: %.2f ms\n', mean(valid_latencies));
-    fprintf('Std Deviation: %.2f ms\n', std(valid_latencies));
-    figure; histogram(valid_latencies, 15, 'FaceColor', '#D95319'); 
-    xlabel('Latency [ms]'); ylabel('Count');
+    fprintf(fileID, 'Mean Detection Time: %.2f ms\n', mean(valid_latencies));
+    fprintf(fileID, 'Std Deviation: %.2f ms\n\n', std(valid_latencies));
+end
+
+fprintf(fileID, '--- File-wise Accuracy ---\n');
+fprintf(fileID, 'File Name\tTrue Class\tPredicted Class\tAccuracy [%%]\tDetection Time [ms]\n');
+
+all_file_accuracies = zeros(length(files),1);
+
+for f = 1:length(files)
+    % --- True label z nazwy pliku
+    true_label = 0;
+    for e_idx = 1:numel(errors)
+        tag = sprintf('fault%d_', errors(e_idx));
+        if contains(files(f).name, tag)
+            true_label = errors(e_idx);
+            break;
+        end
+    end
+    
+    % --- Predicted class z pred_over_time
+    % Zakładamy, że pred_over_time zawiera predykcje dla tego pliku
+    majority_pred = mode(pred_over_time(tailStart:end));
+    
+    % --- Accuracy dla pliku
+    file_acc = (majority_pred == true_label) * 100;
+    all_file_accuracies(f) = file_acc;
+    
+    % --- Latency
+    det_time = all_files_latencies(f);
+    if isnan(det_time)
+        det_str = 'NO DETECTION';
+    else
+        det_str = sprintf('%.2f', det_time*1000);
+    end
+    
+    fprintf(fileID, '%s\t%d\t%d\t%.2f\t%s\n', ...
+            files(f).name, true_label, majority_pred, file_acc, det_str);
+end
+
+% --- Średnia dokładność
+mean_acc = mean(all_file_accuracies);
+fprintf(fileID, '\nAverage File-wise Accuracy: %.2f%%\n', mean_acc);
+
+fclose(fileID);
+disp('Raport zapisany do pliku: multi_class_report.txt');
+
+% ===== Histogram latencji =====
+if ~isempty(valid_latencies)
+    figure;
+    histogram(valid_latencies, 15, 'FaceColor', '#D95319');
+    xlabel('Latency [ms]');
+    ylabel('Count');
     title('Detection Latency Distribution');
 end
+
