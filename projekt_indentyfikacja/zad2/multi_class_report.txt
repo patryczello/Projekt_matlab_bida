@@ -1,9 +1,9 @@
 ================ MULTI-CLASS STATISTICAL REPORT ================
 
-Total Files Processed: 64
-Overall Detection Rate: 98.44%
-Mean Detection Time: 0.55 ms
-Std Deviation: 1.69 ms
+Total Files Processed: 63
+Overall Detection Rate: 80.91%
+Mean Detection Time: 50 ms
+
 
 --- File-wise Accuracy ---
 File Name	True Class	Predicted Class	Accuracy [%]	Detection Time [ms]
