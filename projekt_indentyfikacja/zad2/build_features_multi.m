@@ -18,7 +18,7 @@ for s = 1:hop:(n - windowLen + 1)
         x = w(:,p);
 
         % --- Statistical features ---
-        f_stats = [rms(x), std(x), max(x), min(x), skewness(x), kurtosis(x)];
+        f_stats = [rms(x), std(x), skewness(x), kurtosis(x), max(x) - min(x), max(abs(x)) / (curr_rms + 1e-6)];
 
         % --- Spectral feature (FFT) ---
         Xf = fft(x);

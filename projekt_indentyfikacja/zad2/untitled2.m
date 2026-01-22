@@ -54,36 +54,86 @@ ibeta_ok = Slast.ibeta(1:tailStart-1,1);
 motor_torque_ok = Slast.motor_torque(1:tailStart-1,1);
 
 %% ===== Folder na training plots =====
-train_plot_dir = './training_data/';
+train_plot_dir = './training_data_2/';
 if ~exist(train_plot_dir,'dir')
     mkdir(train_plot_dir);
 end
 
 %% ===== Funkcja rysująca przykładowe okno =====
 function plot_example_window(mat, Xf, windowLen, hop, fs, title_str, save_path)
+
     example_window_idx = 1; % pierwsze okno
     sample_window = mat((example_window_idx-1)*hop+1:(example_window_idx-1)*hop+windowLen, :);
     t_win = (0:windowLen-1)/fs;
 
-    figure('Name',title_str,'NumberTitle','off','Position',[100 100 900 600]);
+    var_names = {'ia','ib','ic','ialfa','ibeta','torque'};
+    nVars = numel(var_names);
 
-    subplot(2,1,1)
-    plot(t_win, sample_window)
+    % ===== cechy dla przykładowego okna =====
+    Xwin = Xf(example_window_idx, :);
+    nFeatTotal = numel(Xwin);
+
+    % ===== podział cech =====
+    nFeatPerVar = 7;              % 6 * 7 = 42
+    nMainFeats  = nVars*nFeatPerVar;
+
+    if nFeatTotal < nMainFeats + 2
+        error('Za mało cech: %d. Oczekiwano co najmniej %d.', ...
+              nFeatTotal, nMainFeats + 2);
+    end
+
+    % ostatnie dwie cechy
+    zero_seq = Xwin(end-1);
+    pos_seq  = Xwin(end);
+
+    % ===== Figure niewidoczne =====
+    fig = figure( ...
+        'Name', title_str, ...
+        'NumberTitle','off', ...
+        'Position',[100 100 1100 900], ...
+        'Visible','off' );
+
+    % ===== 1) Sygnały w czasie =====
+    subplot(4,2,[1 2])
+    plot(t_win, sample_window, 'LineWidth',1.2)
     xlabel('Czas [s]')
     ylabel('Amplituda')
     legend({'ia','ib','ic','ialfa','ibeta','motor\_torque'}, 'Location', 'best');
     title(['Przykładowe okno sygnału - ' title_str])
     grid on
 
-    subplot(2,1,2)
-    bar(Xf(example_window_idx,:))
-    xlabel('Indeks cechy')
-    ylabel('Wartość cechy')
-    title('Wyekstrahowane cechy dla przykładowego okna')
-    grid on
+    % ===== 2) Wykresy cech – osobno dla każdej zmiennej =====
+    for v = 1:nVars
+        idx_start = (v-1)*nFeatPerVar + 1;
+        idx_end   = v*nFeatPerVar;
 
-    saveas(gcf, save_path);
+        feats_v = Xwin(idx_start:idx_end);
+
+        subplot(4,2,2+v)
+        bar(feats_v)
+        xlabel('Indeks cechy')
+        ylabel('Wartość')
+        title(['Cechy - ' var_names{v}])
+        grid on
+    end
+
+    % ===== 3) Tekst: zero_seq i pos_seq =====
+    % umieszczony pod ostatnim subplotem
+    annotation(fig, 'textbox', ...
+        [0.1 0.02 0.8 0.05], ...   % [x y w h] w jednostkach znormalizowanych
+        'String', sprintf('zero\\_seq = %.4g    |    pos\\_seq = %.4g', zero_seq, pos_seq), ...
+        'HorizontalAlignment','center', ...
+        'VerticalAlignment','middle', ...
+        'EdgeColor','none', ...
+        'FontSize',11, ...
+        'FontWeight','bold');
+
+    % ===== Zapis i zamknięcie =====
+    saveas(fig, save_path);
+    close(fig)
+
 end
+
 
 %% ===== Przygotowanie i rysowanie danych =====
 for i = 1:nCases
