@@ -69,16 +69,22 @@ function plot_example_window(mat, Xf, windowLen, hop, fs, title_str, save_path)
     var_names = {'ia','ib','ic','ialfa','ibeta','torque'};
     nVars = numel(var_names);
 
-    % liczba cech na jedną zmienną
-    nFeatTotal = size(Xf,2);
-    nFeatPerVar = nFeatTotal / nVars;
+    % ===== cechy dla przykładowego okna =====
+    Xwin = Xf(example_window_idx, :);
+    nFeatTotal = numel(Xwin);
 
-    if mod(nFeatTotal, nVars) ~= 0
-        error('Liczba cech (%d) nie dzieli się równo na %d zmiennych.', nFeatTotal, nVars);
+    % ===== podział cech =====
+    nFeatPerVar = 7;              % 6 * 7 = 42
+    nMainFeats  = nVars*nFeatPerVar;
+
+    if nFeatTotal < nMainFeats + 2
+        error('Za mało cech: %d. Oczekiwano co najmniej %d.', ...
+              nFeatTotal, nMainFeats + 2);
     end
 
-    % cechy dla przykładowego okna
-    Xwin = Xf(example_window_idx, :);
+    % ostatnie dwie cechy
+    zero_seq = Xwin(end-1);
+    pos_seq  = Xwin(end);
 
     % ===== Figure niewidoczne =====
     fig = figure( ...
@@ -110,6 +116,17 @@ function plot_example_window(mat, Xf, windowLen, hop, fs, title_str, save_path)
         title(['Cechy - ' var_names{v}])
         grid on
     end
+
+    % ===== 3) Tekst: zero_seq i pos_seq =====
+    % umieszczony pod ostatnim subplotem
+    annotation(fig, 'textbox', ...
+        [0.1 0.02 0.8 0.05], ...   % [x y w h] w jednostkach znormalizowanych
+        'String', sprintf('zero\\_seq = %.4g    |    pos\\_seq = %.4g', zero_seq, pos_seq), ...
+        'HorizontalAlignment','center', ...
+        'VerticalAlignment','middle', ...
+        'EdgeColor','none', ...
+        'FontSize',11, ...
+        'FontWeight','bold');
 
     % ===== Zapis i zamknięcie =====
     saveas(fig, save_path);
