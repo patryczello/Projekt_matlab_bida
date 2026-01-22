@@ -61,29 +61,62 @@ end
 
 %% ===== Funkcja rysująca przykładowe okno =====
 function plot_example_window(mat, Xf, windowLen, hop, fs, title_str, save_path)
+
     example_window_idx = 1; % pierwsze okno
     sample_window = mat((example_window_idx-1)*hop+1:(example_window_idx-1)*hop+windowLen, :);
     t_win = (0:windowLen-1)/fs;
 
-    figure('Name',title_str,'NumberTitle','off','Position',[100 100 900 600]);
+    var_names = {'ia','ib','ic','ialfa','ibeta','torque'};
+    nVars = numel(var_names);
 
-    subplot(2,1,1)
-    plot(t_win, sample_window)
+    % liczba cech na jedną zmienną
+    nFeatTotal = size(Xf,2);
+    nFeatPerVar = nFeatTotal / nVars;
+
+    if mod(nFeatTotal, nVars) ~= 0
+        error('Liczba cech (%d) nie dzieli się równo na %d zmiennych.', nFeatTotal, nVars);
+    end
+
+    % cechy dla przykładowego okna
+    Xwin = Xf(example_window_idx, :);
+
+    % ===== Figure niewidoczne =====
+    fig = figure( ...
+        'Name', title_str, ...
+        'NumberTitle','off', ...
+        'Position',[100 100 1100 900], ...
+        'Visible','off' );
+
+    % ===== 1) Sygnały w czasie =====
+    subplot(4,2,[1 2])
+    plot(t_win, sample_window, 'LineWidth',1.2)
     xlabel('Czas [s]')
     ylabel('Amplituda')
     legend({'ia','ib','ic','ialfa','ibeta','motor\_torque'}, 'Location', 'best');
     title(['Przykładowe okno sygnału - ' title_str])
     grid on
 
-    subplot(2,1,2)
-    bar(Xf(example_window_idx,:))
-    xlabel('Indeks cechy')
-    ylabel('Wartość cechy')
-    title('Wyekstrahowane cechy dla przykładowego okna')
-    grid on
+    % ===== 2) Wykresy cech – osobno dla każdej zmiennej =====
+    for v = 1:nVars
+        idx_start = (v-1)*nFeatPerVar + 1;
+        idx_end   = v*nFeatPerVar;
 
-    saveas(gcf, save_path);
+        feats_v = Xwin(idx_start:idx_end);
+
+        subplot(4,2,2+v)
+        bar(feats_v)
+        xlabel('Indeks cechy')
+        ylabel('Wartość')
+        title(['Cechy - ' var_names{v}])
+        grid on
+    end
+
+    % ===== Zapis i zamknięcie =====
+    saveas(fig, save_path);
+    close(fig)
+
 end
+
 
 %% ===== Przygotowanie i rysowanie danych =====
 for i = 1:nCases
